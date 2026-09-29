@@ -1,7 +1,7 @@
 
 # Crestron XSIG Integration for Home Assistant
 
-[![Version](https://img.shields.io/badge/version-1.25.5-blue.svg)](https://github.com/adamjs83/crestron-xsig-hassio/releases)
+[![Version](https://img.shields.io/badge/version-1.25.6-blue.svg)](https://github.com/adamjs83/crestron-xsig-hassio/releases)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
