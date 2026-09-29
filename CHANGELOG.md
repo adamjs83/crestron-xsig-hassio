@@ -1,0 +1,1233 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.25.4] - 2025-11-30
+
+### Fixed
+- **Memory Leak Fix** - Fixed incorrect cleanup of template trackers in `__init__.py`
+  - `async_track_template_result` returns a callable, not an object with `async_remove()`
+  - Changed cleanup to call the returned function directly
+  - Standardized callback cleanup pattern in `sensor.py` and `media_player.py` to match other platforms
+
+## [1.25.3] - 2025-11-25
+
+### Fixed
+- **Callback Deregistration Leaks** - Fixed memory leak where entity callbacks persisted after removal
+  - Bound methods create new objects each time, so `remove_callback(self.process_callback)` never matched
+  - Now stores callback reference on registration and uses same reference for removal
+  - Affects: light, switch, cover, climate (2 classes), event, binary_sensor entities
+
+- **Cover Stop Feature** - Fixed runtime errors when stop command issued without stop_join configured
+  - STOP feature now only advertised when stop_join is configured
+  - Guard added to `async_stop_cover()` method
+
+- **Template Join Conversion Safety** - Fixed crashes from invalid template values
+  - Analog joins now handle float strings like "1.0" via `int(float(value))`
+  - Invalid values logged as warnings instead of crashing connection
+
+- **XSIG Server Shutdown** - Fixed incomplete cleanup leaving sockets in limbo
+  - Now properly awaits `wait_closed()` for both server and writer
+  - Writer drained before closing
+
+- **Digital Value Parsing** - Expanded truthy/falsy value recognition
+  - Now accepts: "1", "0", "true", "false", "yes", "no" (case-insensitive)
+  - In addition to existing: STATE_ON, STATE_OFF, "True", "False"
+
+- **LED Binding Entity ID Matching** - Fixed bindings silently failing for names with special characters
+  - Now uses Home Assistant's `slugify()` helper instead of naive `.lower().replace(" ", "_")`
+  - Handles punctuation, hyphens, unicode, and other special characters correctly
+
+- **Missing Translations** - Synced translations/en.json with strings.json
+  - Added: `edit_dimmer`, `led_binding_menu`, `configure_dimmer_leds` steps
+  - Added: `abort` section for dimmer-related errors
+
+## [1.25.2] - 2025-11-25
+
+### Removed
+- **Dead Code Cleanup** - Removed ~230 lines of unused code
+  - Removed deprecated LED binding class and unreachable code from select.py (218 lines)
+  - Removed 12 unused imports from __init__.py
+  - Removed unused imports from 8 platform files (light, binary_sensor, sensor, switch, media_player, climate, event, led_binding_manager)
+  - No functional changes - code cleanup only
+
+## [1.25.1] - 2025-11-25
+
+### Fixed
+- **Auto-cleanup Deprecated LED Binding Entities** - Removes orphaned LED binding select entities
+  - These entities stored ALL bindable HA entities as options, exceeding 16KB database limit
+  - Now automatically cleaned up on integration reload
+  - Fixes "State attributes exceed maximum size of 16384 bytes" warnings
+
+## [1.25.0] - 2025-11-25
+
+### Fixed
+- **Manual Join Lookup for Dimmers** - Fixed LED switches and button events not using manual join configuration
+  - JSON serialization converts dict keys from integers to strings
+  - Manual joins lookup now uses string keys (`str(button_num)`)
+  - Affected files: switch.py, event.py, config_flow/dimmers.py
+  - LED feedback switches now correctly use configured manual joins instead of auto-sequential calculation
+
+## [1.24.9] - 2025-01-25
+
+### Changed
+- **Centralized Hub Access** - Created `helpers.py` with `get_hub()` function
+  - Removed 75 lines of duplicate hub access code across 9 platform files
+  - Consistent hub lookup pattern: config entry first, YAML fallback
+  - Cleaner, more maintainable code
+
+## [1.24.8] - 2025-01-25
+
+### Fixed
+- **Import Error Fix** - Removed incorrect `from .hub import CrestronHub` in sensor.py and switch.py
+  - The `CrestronHub` class is in `__init__.py`, not a separate hub module
+  - Changed type hints to use `Any` instead
+
+## [1.24.7] - 2025-01-25
+
+### Added
+- **Comprehensive Type Hints** - Added type hints to all 27 Python files
+  - Modern Python 3.10+ syntax (`|` for unions, `list[]` instead of `List[]`)
+  - All function parameters and return types annotated
+  - Class attributes typed for better IDE support
+  - Complex local variables typed for clarity
+  - Home Assistant types properly imported (HomeAssistant, ConfigEntry, FlowResult, etc.)
+  - Improved code maintainability and IDE autocomplete support
+
+## [1.24.6] - 2025-01-24
+
+### Changed
+- **Centralized Version Constant** - Added `VERSION` constant to `const.py`
+  - All `sw_version` references now use the centralized constant
+  - Single source of truth for version number
+  - Updated 9 `device_info` properties across 8 files
+  - Device info now shows correct version (was showing outdated 1.6.0/1.8.0)
+
+## [1.24.5] - 2025-01-24
+
+### Changed
+- **Specific Exception Handling** - Replaced broad `except Exception` with `except OSError`
+  - Socket operations now catch only network-related errors
+  - Programming errors (TypeError, ValueError) will now propagate instead of being silently caught
+  - Updated 6 exception handlers in `crestron.py`
+
+## [1.24.4] - 2025-01-24
+
+### Changed
+- **Logging Performance** - Converted f-string logging to %-style formatting
+  - Defers string interpolation until message is actually logged
+  - Minor performance improvement when debug logging is disabled
+  - Updated 27 log statements across 10 files
+
+## [1.24.3] - 2025-01-24
+
+### Changed
+- **Template Sync Performance** - O(1) lookup for template-to-join mapping
+  - Added `_template_to_join` reverse lookup dictionary
+  - `template_change_callback` now uses dict lookup instead of iterating through all templates
+  - Improves performance when Home Assistant state changes trigger Crestron updates
+  - With 100 templates: reduced from 100 comparisons to 1 lookup per state change
+
+## [1.24.2] - 2025-01-24
+
+### Added
+- **`async_set_analog` Method** - New async method for sending analog joins with proper flow control
+  - Awaits `drain()` to ensure data is transmitted before returning
+  - Prevents potential buffer issues during rapid analog value updates
+  - Consistent with existing `async_set_digital` pattern
+
+### Changed
+- Updated all platform files to use `async_set_analog` instead of sync `set_analog`:
+  - `light.py` - brightness control
+  - `cover.py` - position control
+  - `climate.py` - temperature setpoints and floor warming mode
+  - `media_player.py` - volume and source selection
+  - `__init__.py` - template sync to hub
+
+## [1.24.1] - 2025-01-24
+
+### Fixed
+- **Code Cleanup** - Removed duplicate definitions
+  - Removed duplicate `EVENT_HOMEASSISTANT_STOP` import in `__init__.py`
+  - Removed duplicate `CONF_STOP_JOIN` constant in `const.py` (shared by covers and media players)
+
+## [1.24.0] - 2025-01-24
+
+### Changed
+- **Major Performance Improvement** - Entity callbacks now filter by relevant joins
+  - Each entity only updates when its specific join(s) change, not on every join change
+  - With 50 entities and 10 updates/sec: reduced from 500 to 10 state updates/sec (50x improvement)
+  - All entities still respond to connection state changes ("available" callback)
+  - No impact on startup behavior - entities receive updates when Crestron sends their joins
+  - Affected platforms: light, switch, sensor, binary_sensor, cover, climate, media_player
+  - Event entities already had correct filtering (unchanged)
+
+## [1.23.1] - 2025-01-24
+
+### Fixed
+- **Config Entry Removal Bug** - Fixed issue where deleting a config entry prevented adding a new entry on the same port
+  - Implemented `async_remove_entry()` for proper cleanup when entries are deleted
+  - Hub now properly stops and releases port when entry is removed
+  - Entry data cleaned from `hass.data[DOMAIN]` on removal
+  - Hub_source markers and notification flags cleared appropriately
+  - Maintains hub persistence during reload (no connection drops when managing entities)
+
+## [1.23.0] - 2025-01-22
+
+### Added
+- **Event Bus Integration for Button Presses** - Buttons now fire `crestron_button` events
+  - Event type: `crestron_button`
+  - Event data: `device_name`, `button` (1-6), `action` (press/double_press/hold)
+  - Works with standard Home Assistant event triggers
+  - Compatible with Node-RED and other automation tools
+  - EventEntity state updates still work (backward compatible)
+
+### Changed
+- Button events now fire on both EventEntity (entity state) AND event bus
+- Enables simpler automation creation without blueprints
+- Event data structure consistent across all button events
+
+### Example Automation
+```yaml
+trigger:
+  - platform: event
+    event_type: crestron_button
+    event_data:
+      device_name: "Living Room Dimmer"
+      button: 1
+      action: press
+action:
+  - service: light.toggle
+    target:
+      entity_id: light.living_room
+```
+
+## [1.22.7] - 2025-01-22
+
+### Fixed
+- **LED Binding Edit with Unbound Buttons** - Fixed crash when editing LED bindings with empty buttons
+  - Root cause: Unbound buttons stored as `None`, but code expected dict
+  - Line 138: `existing_bindings.get(str(btn_num), {})` returned stored `None`, not default `{}`
+  - Line 162: Tried to call `.get("invert")` on `None` → AttributeError
+  - Solution: Use `or {}` to ensure `existing` is always a dict
+  - Now you can edit LED bindings even when some buttons are unbound
+
+## [1.22.6] - 2025-01-22
+
+### Fixed
+- **Dimmer Edit Preserves LED Bindings** - Fixed critical data loss bug when editing dimmers
+  - Root cause: Dimmer handler used stale config_entry.data, wiping out LED bindings on save
+  - Solution: Get fresh entry before all dimmer save operations (consistent with LED binding handler)
+  - Now LED bindings survive: editing dimmers, adding dimmers, removing dimmers
+  - Fixed all 4 save locations: add_dimmer_simple, add_dimmer_manual, _save_dimmer, remove_dimmers
+  - Same pattern that fixed LED binding persistence in v1.22.5
+
+### Changed
+- Dimmer handler now uses fresh config entry pattern: `async_get_entry(entry_id)` before `async_update_entry()`
+- Consistent with LED binding handler and other entity handlers (covers, lights, sensors, etc.)
+
+## [1.22.5] - 2025-01-22
+
+### Fixed
+- **LED Bindings Finally Persist!** - Found and fixed the ACTUAL root cause via agent analysis
+  - Root cause: In OptionsFlow, `async_create_entry(data={})` sets options to empty dict
+  - Was saving to entry.options then immediately overwriting with async_create_entry(data={})
+  - Solution: Move LED bindings from entry.options to entry.data (consistent with other handlers)
+  - Now bindings persist across: reopening config, integration reload, HA restart
+  - Agent ran deep analysis 3x to identify the Home Assistant options flow pattern issue
+
+### Changed
+- LED bindings now stored in `config_entry.data[CONF_LED_BINDINGS]` (not options)
+- Consistent with covers, lights, switches, sensors, climate, media players, dimmers
+
+## [1.22.4] - 2025-01-22
+
+### Fixed
+- **LED Bindings Not Saved to Storage** - Fixed the critical root cause preventing any persistence
+  - Root cause: Config flow updated a stale config_entry that HA didn't persist
+  - Solution: Always get fresh entry from registry before saving and loading bindings
+  - Now bindings are actually written to storage and survive restarts
+  - Symptoms fixed:
+    - Bindings appeared to work but selections were gone when reopening config
+    - Bindings lost after integration reload
+    - Bindings lost after HA restart
+
+## [1.22.3] - 2025-01-22
+
+### Fixed
+- **LED Bindings Lost After Integration Reload** - Fixed the actual root cause
+  - Root cause: LED binding manager stored stale config_entry in __init__ and reused it during reload
+  - Solution: Store entry_id and always get fresh entry from registry in _load_bindings()
+  - Now bindings persist correctly when you reload the integration via UI
+  - User workflow now works: Configure bindings → they work → reload integration → they STILL work
+
+## [1.22.2] - 2025-01-22
+
+### Fixed
+- **LED Bindings Lost After Reload** - Fixed bindings disappearing after integration reload
+  - Root cause: Stale config entry object during reload didn't have updated options
+  - Solution: Get fresh entry from config entries registry before initializing LED binding manager
+  - Bindings now persist correctly across integration reloads
+  - No more "LED binding manager initialized with 0 bindings" after reload
+
+## [1.22.1] - 2025-01-21
+
+### Fixed
+- **LED Binding Validation Error** - Fixed "Entity None is neither a valid entity ID" error when leaving button LED bindings blank
+  - Root cause: EntitySelector with `default=None` caused validation error
+  - Solution: Only set default value when there's an actual existing entity_id
+  - Now properly allows optional/unbound buttons as designed
+
+## [1.22.0] - 2025-01-21
+
+### Added
+- **LED Binding Manager** - Domain-filtered LED binding solution with zero database bloat
+  - Store LED bindings in config entry options instead of select entities (avoids 32KB limit)
+  - Domain-filtered entity selectors show only 15-50 relevant entities (vs 300+)
+  - Config flow UI: Settings → Crestron → Configure → Manage Dimmers/Keypads → Configure LED Bindings
+  - Automatic state synchronization via state listeners
+  - Support for invert flag (LED on when entity is off)
+  - Reload support without connection drops
+  - Persistent across Home Assistant restart
+
+### Changed
+- LED bindings now stored in `config_entry.options["led_bindings"]` (JSON format)
+- Select entities for LED binding deprecated (will be removed in future release)
+- Improved performance with O(1) lookups and direct callbacks
+
+### Technical Details
+- Created `led_binding_manager.py` - Core LED sync logic with automatic state listeners
+- Created `config_flow/led_bindings.py` - UI flow handler for LED configuration
+- Updated `__init__.py` - Register and initialize LED binding manager
+- Updated config flow menus to add LED binding configuration option
+- Supports all bindable domains: light, switch, cover, binary_sensor, climate, media_player, and more
+
+## [1.21.1] - 2025-11-21
+
+### Fixed
+- **Blueprint Template Error** - Fixed "Entity {{ button_1_event }} is neither a valid entity ID" error
+  - Root cause: Templates not supported in trigger entity_id fields
+  - Solution: Added back button event entity selectors with smart device filtering
+  - Entity selectors now auto-filter to show only buttons from selected dimmer device
+  - UX improvement: Select device once, then button dropdowns only show that device's buttons
+
+### Changed
+- Button entity selectors are now optional with smart filtering
+- Each button selector automatically filters to show only event entities from the selected dimmer device
+- Maintains the improved UX while fixing the template validation error
+
+## [1.21.0] - 2025-11-21 [BROKEN - DO NOT USE]
+
+### Changed
+- **Blueprint Major UX Overhaul: Complete Auto-Discovery**
+  - **Select dimmer device ONCE** - everything else is automatic
+  - Button event entities auto-discovered from device (no manual selection needed!)
+  - LED switch entities auto-discovered from device
+  - User only configures actions and LED bindings (optional)
+  - Removed 6 redundant button entity selectors
+
+### Before vs After
+**Before (v1.20.9):**
+- Select dimmer device
+- Select button 1 event entity
+- Select button 2 event entity
+- ... (6 selections)
+- Configure actions
+- Select LED bindings
+
+**After (v1.21.0):**
+- Select dimmer device ✨ **THAT'S IT!**
+- Configure actions (optional)
+- Select LED bindings (optional)
+
+### Technical Details
+- Auto-discovers button event entities using `device_entities()` with regex matching
+- Auto-discovers LED switch entities from same device
+- Triggers use template variables instead of user inputs
+- Cleaner, more intuitive configuration experience
+
+### Benefits
+- **80% fewer manual selections** (1 device vs 7 entities)
+- Impossible to mismatch button entities with wrong device
+- Faster setup for new dimmers
+- More user-friendly for non-technical users
+
+## [1.20.9] - 2025-11-21 [SUPERSEDED]
+
+### Changed
+- **Blueprint UX Improvement: Device Selector**
+  - Replaced manual text input for dimmer name with device selector dropdown
+  - Automatically derives LED switch entity IDs from selected device
+  - No more typing errors or mismatches between dimmer name and entity IDs
+  - Uses Home Assistant's native device picker with filtering
+
+### Technical Details
+- Blueprint now uses `device_entities()` to dynamically discover LED switches
+- Device filter ensures only Crestron Keypad/Dimmer devices are shown
+- LED entity IDs are automatically matched using regex patterns
+
+## [1.20.8] - 2025-11-21
+
+### Changed (Breaking)
+- **LED Binding Moved to Blueprint**
+  - LED binding is now configured directly in the blueprint automation
+  - Select entities for LED binding (`select.{dimmer}_button_{n}_led_binding`) are deprecated and no longer created
+  - Existing users: Reconfigure LED bindings in the blueprint (one-time setup required)
+  - All other dimmer functionality unchanged: event entities, LED switches, lighting load, device grouping
+
+### Fixed
+- **Recorder Database Errors** - Eliminated 32KB `entity_registry_updated` errors
+  - Previous implementation stored all bindable entities in select entity options
+  - With 300+ entities, this exceeded Home Assistant's 32KB database limit
+  - New blueprint approach uses native HA entity picker with no database storage
+
+### Benefits
+- Better UX: Native Home Assistant entity picker with built-in search
+- No entity proliferation: Removes 6 select entities per dimmer
+- Simpler integration: LED binding logic in one place (blueprint)
+- More maintainable: ~200 lines of code removed from integration
+
+### Migration Guide
+**For existing users with LED bindings configured:**
+1. Open your dimmer blueprint automation in Home Assistant
+2. In the blueprint inputs, re-select the entities you want bound to each LED
+3. Save the automation
+4. Old select entities will no longer be created and can be safely deleted
+
+**Example:**
+- Before: Set `select.kitchen_keypad_button_1_led_binding` to `light.kitchen`
+- After: Set blueprint input `Button 1 - LED Binding` to `light.kitchen`
+
+## [1.20.7] - 2025-11-21
+
+### Changed
+- **Join Limits Increased to Protocol Maximum**
+  - Digital joins: d1-d250 → **d1-d4096** (protocol supports 12-bit encoding = 4096 joins)
+  - Analog joins: a1-a250 → **a1-a1024** (protocol supports 10-bit encoding = 1024 joins)
+  - Serial joins: s1-s250 → **s1-s1024** (protocol supports 10-bit encoding = 1024 joins)
+  - Previous 250 limit was artificially restrictive
+  - Crestron systems support thousands of joins as designed
+  - Updated validation in `config_flow/dimmers.py` and error messages in `strings.json` and `translations/en.json`
+
+## [1.20.6] - 2025-01-21
+
+### Fixed
+- **Config Flow: Dimmer Edit Menu** - Fixed blank menu options when editing dimmers
+  - Issue: When selecting a dimmer to edit, two blank options with right-facing arrows were displayed
+  - Clicking either option resulted in an error
+  - Root cause: `async_step_edit_dimmer` used `async_show_menu()` without proper strings.json translations
+  - Solution: Changed to `async_show_form()` with schema that defines labeled options directly
+  - Now displays proper labels: "Reconfigure Dimmer/Keypad" and "← Back"
+  - Consistent with all other menus in the codebase
+
+## [1.20.5] - 2025-01-21
+
+### Added
+- **Automation Blueprint for Dimmer/Keypad Button Controller**
+  - Pre-built blueprint for easy dimmer/keypad configuration without writing YAML
+  - Configure actions for all button press types (press, double press, hold)
+  - Optional LED binding for visual feedback per button
+  - Support for up to 6 buttons per dimmer
+  - All buttons and actions are optional - configure only what you need
+  - Parallel execution mode supports multiple button presses simultaneously
+  - Comprehensive documentation with examples in `blueprints/README.md`
+  - One-click import from Home Assistant UI
+
+### Documentation
+- Added Blueprints section to main README with quick start guide
+- Added detailed blueprint usage guide in `blueprints/README.md`
+- Added example configurations for common use cases
+- Added import badge for easy blueprint installation
+
+### Files Added
+- `blueprints/automation/crestron_dimmer_button_controller.yaml` - Main blueprint file
+- `blueprints/README.md` - Blueprint documentation and examples
+
+## [1.20.4] - 2025-01-21
+
+### Fixed
+- **CRITICAL: Multi-Hub Support for Dimmer Entities** - Fixed button events and LED binding with multiple Crestron hub instances
+  - Fixed: Button event entities registered callbacks on wrong hub when multiple config entries exist
+  - Fixed: LED binding select entities connected to wrong hub in multi-hub configurations
+  - Root cause: event.py and select.py used global hub reference instead of config entry-specific hub
+  - Changed: Both files now correctly retrieve hub from `hass.data[DOMAIN][entry.entry_id]`
+  - Result: Button press events and LED binding now work correctly with multiple hubs on different ports
+  - Removed temporary debug logging added in v1.20.3 (no longer needed)
+
+### Technical Details
+- **Problem:** When running multiple Crestron hub instances (e.g., port 16384 and port 26475):
+  - event.py line 36: `hub = hass.data[DOMAIN][HUB]` always grabbed global hub
+  - select.py line 33: Same issue
+  - Button events registered on wrong hub, never received callbacks from correct hub
+- **Solution:** Match pattern used in other platforms (light.py, switch.py, etc.):
+  - Get hub from config entry: `hass.data[DOMAIN].get(config_entry.entry_id)`
+  - Handle dict format and direct reference fallback
+  - Only use global HUB as last resort for backward compatibility
+- **Impact:** Fixes button press detection and LED binding for dimmer/keypad entities in multi-hub setups
+
+## [1.20.3] - 2025-01-21
+
+### Added
+- **Event Entity Diagnostics** - Added debug logging for button event entities
+  - Event entities now log all incoming digital join callbacks when debug logging enabled
+  - Helps troubleshoot button press detection issues
+  - Shows what joins are being received vs. what the entity is monitoring
+  - Filters to digital joins only to reduce log spam
+  - Enable with: `custom_components.crestron.event: debug` in logger config
+
+### Technical Details
+- Added temporary diagnostic logging to `process_callback()` in event.py
+- Logs format: "Button X received callback: dY = Z (monitoring: dA, dB, dC)"
+- Only logs digital joins (d*) to avoid flooding logs with analog/serial data
+- Useful for debugging Crestron-to-HA button press communication
+
+## [1.20.2] - 2025-01-21
+
+### Fixed
+- **Critical Import Error** - Fixed incorrect CONF_NAME import in dimmers.py
+  - Fixed: Integration failed to load with "cannot import name 'CONF_NAME' from 'custom_components.crestron.const'"
+  - Root cause: dimmers.py was importing CONF_NAME from custom const module instead of homeassistant.const
+  - Changed: `from ..const import CONF_NAME` → `from homeassistant.const import CONF_NAME`
+  - Result: Config flow now loads successfully, integration initializes properly
+
+### Technical Details
+- **Problem:** CONF_NAME is a Home Assistant built-in constant, not a custom Crestron constant
+- All other config_flow files correctly imported CONF_NAME from homeassistant.const
+- Only dimmers.py had incorrect import from ..const
+- This prevented entire integration from loading during startup
+- Fixed by moving CONF_NAME import to proper homeassistant.const source
+
+## [1.20.1] - 2025-01-21
+
+### Fixed
+- **Integration Setup Failure** - Completed config_flow refactoring to fix initialization errors
+  - Fixed: Integration failed to load with `KeyError: 'crestron'` in all platforms
+  - Root cause: CrestronConfigFlow and OptionsFlowHandler were not exported from config_flow package
+  - Moved flow classes from standalone config_flow.py to config_flow/flow.py module
+  - Updated config_flow/__init__.py to properly export CrestronConfigFlow and OptionsFlowHandler
+  - Fixed circular import issues in OptionsFlowHandler initialization
+
+### Technical Details
+- **Problem:** v1.20.0 created config_flow/ package but left main classes in config_flow.py
+- Python's import resolution prioritizes packages over modules
+- Home Assistant couldn't find CrestronConfigFlow class → integration never initialized
+- All platforms failed because `hass.data[DOMAIN]` was never created
+- **Solution:** Completed the refactoring by moving all flow logic into the package
+- Created config_flow/flow.py (338 lines) with CrestronConfigFlow and OptionsFlowHandler
+- Updated imports to use relative package imports (.menus, .joins, etc.)
+- Deleted old standalone config_flow.py file
+
+## [1.20.0] - 2025-01-21
+
+### Changed
+- **Major Code Refactoring** - Restructured config_flow.py for improved maintainability
+  - Split monolithic 3,457-line config_flow.py into 16 modular files
+  - Main config_flow.py reduced to 426 lines (87.6% reduction)
+  - Created dedicated handler classes for validators, menus, joins, dimmers, and entities
+  - Each platform (cover, light, switch, sensor, etc.) now has its own handler module
+  - No user-facing changes - purely internal code organization improvements
+
+### Technical Details
+- **New structure:** `config_flow/` directory with modular handlers
+  - `validators.py` - Port validation and exception classes
+  - `base.py` - BaseOptionsFlow and helper utilities
+  - `menus.py` - Navigation menu handlers (293 lines)
+  - `joins.py` - Join sync configuration handlers (376 lines)
+  - `dimmers.py` - Dimmer/keypad wizard handlers (988 lines)
+  - `entities/` - Individual platform handlers (8 files, 1,883 lines total)
+- **Benefits:** Improved code navigation, reduced merge conflicts, better testability
+- **Pattern:** Handler delegation with `self.flow` references
+- All 16 files validated with Python syntax checking
+- Zero functional changes - pure refactoring for maintainability
+
+## [1.19.3] - 2025-01-20
+
+### Changed
+- **LED Binding Diagnostics** - Enhanced logging for LED binding troubleshooting
+  - Added detailed logging when bindings are configured
+  - Increased sync logging to INFO level with full service call details
+  - Added error handling and logging for switch service calls
+  - Logs now show LED entity_id, bound entity state, and service call results
+
+### Technical Details
+- Updated `select.py` _sync_led_state() with comprehensive logging
+- Added try/except around service calls to catch and log errors
+- Helps diagnose LED binding issues where physical LEDs don't respond to bound entity changes
+
+## [1.19.2] - 2025-01-20
+
+### Fixed
+- **LED Switch Entities** - Fixed creation of LED switches from dimmer configurations
+  - LED switch entities were not being created when no regular switches were configured
+  - Removed early return in switch.py that prevented dimmer LED processing
+  - LED switches now correctly created for all dimmers regardless of regular switch configuration
+
+### Technical Details
+- Updated `switch.py` async_setup_entry() to remove early return at line 66
+- Function now processes dimmer configurations even when CONF_SWITCHES is empty
+- Affects all dimmer/keypad entities with button LEDs
+
+## [1.19.1] - 2025-01-20
+
+### Fixed
+- **Button Event Entities** - Fixed callback registration in event.py
+  - Button event entities were failing with `TypeError: CrestronXsig.register_callback() takes 2 positional arguments but 3 were given`
+  - Changed from join-specific callback registration to global callback with join filtering
+  - Matches pattern used in other platforms (light.py, switch.py, etc.)
+  - Fixes button press, double press, and hold events for all dimmer/keypad entities
+
+### Technical Details
+- Updated `event.py` async_added_to_hass() to use `self._hub.register_callback(self.process_callback)`
+- Added `process_callback(cbtype, value)` method that filters callbacks by checking against monitored joins
+- Updated `async_will_remove_from_hass()` to use `self._hub.remove_callback()`
+- Verified switch.py and select.py use correct callback patterns (no changes needed)
+
+## [1.19.0] - 2025-01-19
+
+### Added
+- **Complete UI Entity Management for Media Players** ⭐ **FINAL PLATFORM COMPLETE**
+  - Add/Edit/Remove media player entities via Configure button
+  - Device class selection: TV, Speaker, or Receiver
+  - Required: Source selection with customizable source names
+  - Optional features:
+    - Power control (power on join)
+    - Volume control (mute join, volume join)
+    - Transport controls (play, pause, stop, next, previous)
+  - Supports both YAML and UI configuration (dual config mode)
+  - Automatic entity registry cleanup when removed
+  - Hub persistence during reload (no connection drops)
+
+### Changed
+- **Media Player Platform** - Updated to support UI-based configuration
+  - Dynamic feature detection based on configured joins
+  - Unique ID prefix "ui_" for UI entities to prevent conflicts with YAML entities
+  - Device class now configurable (tv, speaker, receiver)
+  - Turn on/off support with optional power joins
+  - Transport control methods (play, pause, stop, next, previous)
+
+### Technical Details
+- Added constants: `CONF_MEDIA_PLAYERS`, `CONF_POWER_ON_JOIN`, `CONF_POWER_OFF_JOIN`, `CONF_PLAY_JOIN`, `CONF_PAUSE_JOIN`, `CONF_STOP_JOIN`, `CONF_NEXT_JOIN`, `CONF_PREVIOUS_JOIN`, `CONF_REPEAT_JOIN`, `CONF_SHUFFLE_JOIN`
+- Updated `config_flow.py`: Added media player forms, edit/remove support, entity registry cleanup
+- Updated `media_player.py`: Added `from_ui` parameter, dynamic `supported_features` calculation, transport control methods
+- Source configuration via multiline text input (format: "number: name")
+
+### Milestone Achievement
+- ✅ **ALL 9 PLATFORMS NOW HAVE UI ENTITY MANAGEMENT** (100% complete)
+  - Lights ✅
+  - Switches ✅
+  - Covers ✅
+  - Binary Sensors ✅
+  - Sensors ✅
+  - Climate (Floor Warming + Standard HVAC) ✅
+  - Dimmers/Keypads ✅
+  - Media Players ✅ **NEW**
+
+### Benefits
+- **No more YAML editing** - All entity types can now be managed through the UI
+- **Consistent experience** - Same UI patterns across all platforms
+- **Easy source configuration** - Simple text format for adding multiple sources
+- **Flexible features** - Enable only the features you need
+- **Future-proof** - Ready for Home Assistant UI-first direction
+
+## [1.18.0] - 2025-11-18
+
+### Added
+- **Modern Entity Naming** - Implemented Home Assistant's modern `has_entity_name = True` pattern for all dimmer entities
+  - Home Assistant now automatically combines device name + entity name
+  - Example: Device "Kitchen" + Entity "Button 1" = Friendly Name "Kitchen Button 1"
+  - Aligns with Home Assistant best practices and future standards
+
+### Changed
+- **Event Entities** - Added `_attr_has_entity_name = True`, entity name now "Button 1" instead of "Kitchen Button 1"
+- **Select Entities** - Added `_attr_has_entity_name = True`, entity name now "LED 1 Binding" instead of "Kitchen LED 1 Binding"
+- **LED Switch Entities** - Added conditional `has_entity_name` property (True for LED switches), entity name now "LED 1" instead of "Kitchen LED 1"
+- **Dimmer Light Entities** - Added conditional `has_entity_name` property (True for dimmer lights), entity name now "Light" instead of "Kitchen Light"
+
+### Technical Details
+- Event entities (`event.py`): Added `_attr_has_entity_name = True` class attribute
+- Select entities (`select.py`): Added `_attr_has_entity_name = True` class attribute
+- Switch entities (`switch.py`): Added `has_entity_name` property that returns True only for LED switches (dimmer-related)
+- Light entities (`light.py`): Added `has_entity_name` property that returns True only for dimmer lights
+- Regular standalone switches and lights remain unchanged (still use full names)
+- Device name is set in `device_info.name` and Home Assistant handles the combination
+
+### Benefits
+- **Future-proof** - Matches mandatory pattern for new integrations per HA documentation
+- **Automatic name updates** - When users rename a dimmer device, all entity names update automatically
+- **Cleaner code** - No duplication of device name in entity names
+- **Better organization** - Clear separation of device vs entity naming
+- **HA ecosystem alignment** - Matches how modern integrations work (Z-Wave, Zigbee, etc.)
+
+### Migration Notes
+- **IMPORTANT**: After upgrading to v1.18.0, you MUST remove and re-add all dimmers for the new naming to take effect
+- Existing entities will keep their old names until recreated
+- Entity IDs should remain the same (unique_id format unchanged)
+- Only dimmer-related entities are affected (events, selects, LED switches, dimmer lights)
+
+## [1.17.7] - 2025-11-18
+
+### Fixed
+- **Entity Naming (Final Fix)** - Converted from attribute-based to property-based approach for event and select entities
+  - Changed `_attr_name` to `name` property (matching switch.py pattern)
+  - Changed `_attr_unique_id` to `unique_id` property
+  - Changed `_attr_device_info` dict to `device_info` property returning DeviceInfo object
+  - Event entities now correctly display as "{Dimmer Name} Button 1"
+  - Select entities now correctly display as "{Dimmer Name} LED 1 Binding"
+
+### Changed
+- Added DeviceInfo import to event.py and select.py
+- Converted from `_attr_` pattern to property methods
+- Now matches the working implementation pattern from switch.py and light.py
+
+## [1.17.6] - 2025-11-18
+
+### Fixed
+- **Entity Naming** - Removed `_attr_has_entity_name` approach and use full entity names directly
+  - Event entities now correctly show "{Dimmer Name} Button 1"
+  - Select entities now correctly show "{Dimmer Name} LED 1 Binding"
+  - Matches the working approach used by switch and light entities
+
+### Changed
+- Removed `_attr_has_entity_name = True` from event.py and select.py
+- Changed back to full entity names: f"{dimmer_name} Button {button_num}" and f"{dimmer_name} LED {button_num} Binding"
+- Simpler, more consistent approach across all entity types
+- No more reliance on HA's automatic device name prepending
+
+## [1.17.5] - 2025-11-18
+
+### Fixed
+- **Entity Naming** - Fixed event and select entity names to work properly with Home Assistant's automatic device name prepending
+  - Event entities now correctly display as "{Dimmer Name} Button 1" (was incorrectly duplicating name)
+  - Select entities now correctly display as "{Dimmer Name} LED 1 Binding" (was incorrectly duplicating name)
+
+### Technical Details
+- Event and select entities have `_attr_has_entity_name = True`, which tells HA to auto-prepend device name
+- Changed entity names from f"{dimmer_name} Button {button_num}" to f"Button {button_num}"
+- Changed entity names from f"{dimmer_name} LED {button_num} Binding" to f"LED {button_num} Binding"
+- HA automatically prepends device name (dimmer_name) when displaying
+- Switch and light entities remain unchanged (they don't use _attr_has_entity_name)
+- No impact on other platforms (covers, binary sensors, sensors, climate, media players)
+
+## [1.17.4] - 2025-11-18
+
+### Fixed
+- **Entity Naming** - All dimmer entities now include dimmer name for better organization
+  - Event entities: "{Dimmer Name} Button 1" instead of "Button 1"
+  - Select entities: "{Dimmer Name} LED 1 Binding" instead of "LED 1 Binding"
+  - Switch entities: Already correct - "{Dimmer Name} LED 1"
+  - Light entities: Already correct - "{Dimmer Name} Light"
+
+### Changed
+- Updated `event.py`: Changed entity name from f"Button {button_num}" to f"{dimmer_name} Button {button_num}"
+- Updated `select.py`: Changed entity name from f"LED {button_num} Binding" to f"{dimmer_name} LED {button_num} Binding"
+
+## [1.17.3] - 2025-11-18
+
+### Fixed
+- **Dimmer Lighting Load** - Removed unnecessary digital on/off join; dimmers now use single analog join (0-65535) for both on/off and brightness control
+- **Device Grouping** - Dimmer lighting load entities now properly grouped under dimmer device in Home Assistant
+
+### Changed
+- Lighting load configuration simplified - only requires brightness join (analog), no separate on/off join
+- Light entities from dimmers use unique_id format: `crestron_light_dimmer_{name}_a{join}`
+- Updated cleanup code to use brightness_join instead of obsolete is_on_join
+- Updated UI strings and descriptions to reflect single analog join requirement
+- Updated README with correct Crestron programming instructions (single analog join for dimmer control)
+
+### Technical Details
+- Light platform (`light.py`) now creates entities from dimmer configs with device grouping
+- Config flow no longer asks for `light_on_join`, only `light_brightness_join`
+- Dimmer lights automatically grouped under parent dimmer device
+- Analog join range: 0 (off), 1-65535 (on with varying brightness)
+
+## [1.17.2] - 2025-11-18
+
+### Fixed
+- **Dimmer Device Cleanup** - Device now properly removed from device registry when dimmer is deleted
+- **Complete Entity Removal** - All entity types now removed when dimmer is deleted (events, selects, LED switches, light)
+- Fixed issue where only light entity was removed, leaving orphaned event, select, and switch entities
+
+### Changed
+- Enhanced `_cleanup_dimmer_entities()` to remove all associated entity types:
+  - Event entities (button press events)
+  - Select entities (LED bindings)
+  - Switch entities (LED switches)
+  - Light entity (if lighting load present)
+  - Device from device registry
+- Cleanup now runs for ALL dimmers, not just those with lighting loads
+
+## [1.17.1] - 2025-11-18
+
+### Added
+- **Manual Join Assignment Mode** - Choose between auto-sequential or manual join assignment
+- Mode selector before dimmer configuration (auto-sequential recommended, manual for advanced users)
+- Manual mode allows non-sequential join assignments (e.g., d10, d20, d30 instead of d10, d11, d12)
+- Dynamic form that shows only relevant button join fields based on button count
+
+### Changed
+- Dimmer configuration now has 2-step process: 1) Select mode, 2) Configure joins
+- Entity platforms (event.py, switch.py) now handle both auto-sequential and manual join modes
+
+### Technical Details
+- Added async_step_add_dimmer_mode() for mode selection
+- Added async_step_add_dimmer_manual() for manual join configuration
+- Dimmer config stores "manual_joins" dict for manual mode or "base_join" for auto mode
+- Entity creation checks for manual_joins first, falls back to base_join calculation
+- Form dynamically generates 3 fields per button (press, double, hold)
+
+## [1.17.0] - 2025-11-18
+
+### Added - Complete Dimmer/Keypad Redesign
+- **Event Platform** - New platform for button press events (press, double_press, hold)
+- **Select Platform** - LED binding dropdowns to sync LEDs with any HA entity
+- **Simple Configuration** - Single form replaces multi-step wizard
+- **Sequential Join Assignment** - Enter base join, system auto-assigns remaining joins
+- **Real Entity Integration** - Creates event, switch, select, and light entities
+- **LED Binding System** - Dropdown lists all HA entities, LED follows state automatically
+- **Device Registry** - All entities grouped under single device
+
+### Changed - Breaking Changes
+- Simplified configuration from multi-step to single form (4 fields)
+- Button actions configured via HA automations (not config flow)
+- LED feedback configured via select dropdown (not config flow)
+- Join assignment: 3 joins per button (press d10, double d11, hold d12)
+
+### Removed
+- v1.16.x dimmer configuration (multi-step wizard) - marked as deprecated
+
+### Technical Details
+- Event entities fire: event_type="crestron_button" with action: press/double_press/hold
+- LED switches use press join for OUTPUT (bidirectional join usage)
+- Select entities scan entity registry for bindable domains
+- State mapping: 15+ domains, 30+ state mappings to LED on/off
+- Sequential validation: base join + (button_count * 3 - 1) must be <= 250 (increased to 4096 in v1.20.7)
+
+## [1.16.4] - 2025-11-18 [DEPRECATED]
+
+### Deprecated
+- This version's dimmer/keypad implementation is replaced by v1.17.0
+- Multi-step wizard configuration removed in favor of simple single-form approach
+- Use v1.17.0 for new installations
+
+### Added
+- **Button number display** in dimmer configuration - Form title now shows "Configure Button X of Y"
+- **Optional press action** - Press action now has an enable checkbox like double press and hold
+- Comprehensive UI strings for all dimmer configuration steps
+
+### Fixed
+- Button configuration forms now display which button is being configured
+- Press action is now truly optional with enable/disable checkbox
+- All dimmer configuration steps have proper titles and descriptions
+
+### Technical Details
+- Added strings.json entries for add_dimmer_basic, add_dimmer_lighting, add_dimmer_button
+- Button title uses description_placeholders: "Configure Button {button_num} of {total_buttons}"
+- Added config_press checkbox to button schema (matches config_double_press and config_hold pattern)
+- Press validation now checks config_press flag before requiring press_join
+- Translations synchronized to en.json
+
+## [1.16.3] - 2025-11-18
+
+### Fixed
+- Fixed "Unknown error occurred" when submitting dimmer configuration forms
+- Removed unsupported `placeholder` parameter from TextSelectorConfig instances
+- Error: `extra keys not allowed @ data['placeholder']`
+
+### Technical Details
+- TextSelectorConfig does not support the `placeholder` parameter in Home Assistant
+- Changed all TextSelector instances to use `type=selector.TextSelectorType.TEXT` pattern
+- Fixed in both button configuration (7 instances) and lighting load configuration (2 instances)
+- This fixes the validation error that prevented dimmer configuration forms from submitting
+
+## [1.16.2] - 2025-11-18
+
+### Fixed
+- Fixed "Unknown error occurred" when clicking "Add Dimmer/Keypad"
+- Changed button count selector values from integers to strings (Home Assistant requirement)
+- Added proper string-to-integer conversion when processing button count
+
+### Technical Details
+- SelectSelector values must be strings, not integers
+- Updated CONF_BUTTON_COUNT selector options to use string values ("2", "3", "4", "5", "6")
+- Added `int()` conversion when reading button_count from user input
+- This fixes the silent form validation failure that caused the "Unknown error" message
+
+## [1.16.1] - 2025-11-18
+
+### Fixed
+- Added debug logging to dimmer configuration flow to troubleshoot "Unknown error occurred" issue
+- Added logging to async_step_dimmer_menu and async_step_add_dimmer_basic for diagnostics
+
+### Technical Details
+- Debug logs will show when dimmer menu is accessed and which actions are selected
+- Helps identify where configuration flow is failing during dimmer creation
+
+## [1.16.0] - 2025-11-18
+
+### Added
+- **Dimmer/Keypad Configuration Manager** - Complete UI-based configuration for Crestron dimmers and keypads
+- Third main menu option: "Manage Dimmers/Keypads" with full add/edit/remove capabilities
+- Dynamic button configuration supporting 2-6 buttons per dimmer/keypad
+- Optional lighting load configuration with on/off and brightness control
+- Button action types: Press, Double Press, and Hold (all optional and independent)
+- Button feedback configuration for syncing HA state to Crestron button LEDs
+- Entity picker for button actions with domain-aware action selection
+- Service data parameter support via YAML input for advanced service calls
+- Comprehensive join conflict detection across all entities and dimmers
+- Automatic entity registry cleanup when dimmers are removed
+- 13 domain action mappings: light, switch, cover, climate, media_player, fan, lock, vacuum, scene, script, input_boolean, automation, group
+
+### Changed
+- Enhanced main menu from 3 to 4 items including dimmer management
+- Dimmer button actions automatically generate from_joins (Crestron → HA service calls)
+- Dimmer button feedback automatically generates to_joins (HA state → Crestron)
+- Runtime processing merges dimmer-generated joins with explicit joins
+- All dimmer configurations stored in config entry data (CONF_DIMMERS)
+
+### Technical Details
+- No platform changes required - uses existing hub.py and light.py implementations
+- Dimmer processing in __init__.py converts button configs to from_joins/to_joins at runtime
+- Each button supports independent press/double press/hold actions with custom service data
+- Lighting load entities use unique_id pattern: `crestron_light_dimmer_{join}`
+- Join validation includes dimmers in conflict checking algorithm
+- Added 9 new constants to const.py for dimmer configuration
+- Added 600+ lines to config_flow.py with 8 new async methods
+- DOMAIN_ACTIONS dictionary provides action options for 13 entity domains
+
+## [1.15.0] - 2025-11-18
+
+### Changed
+- **Restructured Configuration Menu for Better UX** - Complete redesign of the options flow navigation
+- Main menu reduced from 12 items to 3 items for better usability
+- Two-menu hierarchy: "Manage Entities" and "Manage Join Syncs"
+- Entity management submenu: Add/Edit/Remove entities with entity type selection
+- Join sync management submenu: Add/Edit/Remove to_joins and from_joins
+- Back navigation at every menu level for intuitive user experience
+- Live counts displayed in menu labels showing configured entities and joins
+
+### Technical Details
+- Added async_step_entity_menu() for entity management submenu
+- Added async_step_select_entity_type() for entity type selection
+- Added async_step_join_menu() for join sync management submenu
+- All existing Add/Edit/Remove flows unchanged - only navigation restructured
+- Improves cognitive load by separating entities from join syncs
+- Scalable architecture for future entity platform additions
+
+## [1.14.0] - 2025-01-18
+
+### Added
+- **UI Configuration for Standard HVAC Climate Entities** - Complete UI-based entity management for standard thermostats
+- Climate type selection: Floor Warming or Standard HVAC
+- Standard HVAC form with 20 join fields (3 analog + 15 digital required + 2 digital optional)
+- Organized form sections: Temperature Setpoints, HVAC Modes, Fan Modes, Equipment Status, HVAC Actions
+- Automatic routing to correct climate form when editing based on entity type
+- Type-aware entity display in edit/remove lists showing "Floor Warming" vs "Standard HVAC"
+
+### Changed
+- Enhanced climate.py to support both floor_warming and standard types in async_setup_entry
+- Updated config_flow.py with async_step_select_climate_type and async_step_add_climate_standard
+- Climate menu label updated to reflect both type options
+- Added all standard HVAC join constants to config_flow.py imports
+
+### Technical Details
+- Full support for both climate types via UI (no YAML required)
+- Standard HVAC joins: heat_sp, cool_sp, reg_temp, mode_heat, mode_cool, mode_auto, mode_heat_cool, mode_off, fan_on, fan_auto, fan_mode_on, fan_mode_auto, h1, h2 (opt), c1, c2 (opt), fa, hvac_action_heat, hvac_action_cool, hvac_action_idle
+- Optional joins (h2, c2) validated only if provided
+- Hub persistence during entity management (no connection drops)
+- Safe reload handling with ValueError fallback
+
+## [1.13.0] - 2025-01-18
+
+### Added
+- **UI Configuration for Climate Entities (Floor Warming)** - Complete UI-based entity management for floor warming thermostats
+- Add/edit/remove climate entities through the options flow without editing YAML
+- Support for 5 analog joins: floor_mode_join, floor_mode_fb_join, floor_sp_join, floor_sp_fb_join, floor_temp_join
+- Join validation for analog format ("aXX")
+- Automatic entity registry cleanup when climate entities removed via UI
+- UI/YAML coexistence with unique_id prefixes ("ui" vs "yaml")
+
+### Changed
+- Updated climate.py to support from_ui parameter for unique_id differentiation
+- Enhanced config_flow.py with async_step_add_climate, edit, and remove flows
+- Added CONF_CLIMATES constant to const.py
+
+### Technical Details
+- Floor warming thermostat support only (standard HVAC thermostats still YAML-only)
+- Follows established pattern from previous platforms
+- Hub persistence during entity management (no connection drops)
+- Safe reload handling with ValueError fallback
+
+### Limitations
+- Standard HVAC thermostats (with heat/cool setpoints, modes, fan controls) remain YAML-only due to complexity
+- Only floor_warming type climate entities can be configured via UI
+
+## [1.12.0] - 2025-01-17
+
+### Added
+- **UI Configuration for Switches** - Complete UI-based entity management for switches via Configure button
+- Add/edit/remove switch entities through the options flow without editing YAML
+- Switch join input with validation (digital format "dXX")
+- Device class selector: Switch or Outlet
+- Automatic entity registry cleanup when switches removed via UI
+- UI/YAML coexistence with unique_id prefixes ("ui" vs "yaml")
+- Auto-request join status on entity creation for immediate state sync
+
+### Changed
+- Updated switch.py to support from_ui parameter for unique_id differentiation
+- Enhanced config_flow.py with async_step_add_switch, edit, and remove flows
+- Added CONF_SWITCHES constant to const.py
+- Fixed switch is_on property to default to False instead of None when no data available
+
+### Technical Details
+- Hub persistence during entity management (no connection drops)
+- Follows established pattern from lights (v1.11.0), covers (v1.8.0), binary sensors (v1.9.0), and sensors (v1.10.0)
+- Safe reload handling with ValueError fallback
+- Immediate state synchronization via request_update()
+
+### Roadmap Progress
+- ✅ Covers (v1.8.0)
+- ✅ Binary Sensors (v1.9.0)
+- ✅ Sensors (v1.10.0)
+- ✅ Light (v1.11.0)
+- ✅ Switch (v1.12.0)
+- 🔲 Climate (next)
+- 🔲 Media Player
+
+## [1.11.2] - 2025-01-17
+
+### Added
+- **Auto-request join status on entity creation** - Entities now automatically request current state from Crestron when added
+- New `request_update()` method in CrestronXsig hub to trigger state updates from Crestron
+- Immediate state synchronization for newly created UI entities (lights, covers, sensors, binary sensors)
+
+### Changed
+- Updated all platform entities (light, cover, sensor, binary_sensor) to request updates when added to Home Assistant
+- Entities created via UI now show correct state immediately without needing physical toggle
+- Added debug logging for update requests
+
+### Technical Details
+- Added CrestronXsig.request_update() method that sends 0xFD command to Crestron
+- Modified async_added_to_hass() in light.py, cover.py, sensor.py, binary_sensor.py
+- Update request only sent if Crestron is connected (hub.is_available())
+- Maintains same XSIG protocol behavior as initial connection
+
+### User Impact
+- No more "unknown" or "off" states for newly created entities
+- Entities immediately reflect actual Crestron state
+- Eliminates need to toggle physical switches after creating UI entities
+
+## [1.11.1] - 2025-01-17
+
+### Fixed
+- **Light state showing as "unknown"** - Fixed is_on property to default to False instead of None when no Crestron value available and no restored state
+- Newly created UI lights now show as "off" instead of "unknown" until first value received from Crestron
+
+### Technical Details
+- Changed light.py line 181: return False as default instead of None
+- Prevents "unknown" state for lights on first setup
+- Matches behavior of onoff-type lights
+
+## [1.11.0] - 2025-01-17
+
+### Added
+- **UI Configuration for Lights** - Complete UI-based entity management for lights via Configure button
+- Add/edit/remove light entities through the options flow without editing YAML
+- Brightness join input with validation (analog format "aXX")
+- Light type selector: "Dimmable (Brightness)" or "On/Off Only"
+- Automatic entity registry cleanup when lights removed via UI
+- UI/YAML coexistence with unique_id prefixes ("ui" vs "yaml")
+
+### Changed
+- Updated light.py to support from_ui parameter for unique_id differentiation
+- Enhanced config_flow.py with async_step_add_light, edit, and remove flows
+- Added CONF_LIGHTS constant to const.py
+
+### Technical Details
+- Hub persistence during entity management (no connection drops)
+- Follows established pattern from covers (v1.8.0), binary sensors (v1.9.0), and sensors (v1.10.0)
+- Safe reload handling with ValueError fallback
+- Supports both ColorMode.BRIGHTNESS and ColorMode.ONOFF
+
+### Roadmap Progress
+- ✅ Covers (v1.8.0)
+- ✅ Binary Sensors (v1.9.0)
+- ✅ Sensors (v1.10.0)
+- ✅ Light (v1.11.0)
+- 🔲 Switch (next)
+- 🔲 Climate
+- 🔲 Media Player
+
+## [1.10.0] - 2025-01-17
+
+### Added
+- **UI Configuration for Sensors** - Complete UI-based entity management for sensors via Configure button
+- Add/edit/remove sensor entities through the options flow without editing YAML
+- Analog join (value_join) input with validation (e.g., "a10")
+- Device class selector: temperature, humidity, pressure, power, energy, voltage, current, illuminance, battery, none
+- Unit of measurement configuration field
+- Divisor support for value scaling (e.g., temperature tenths: 720 = 72.0°F)
+- Automatic entity registry cleanup when sensors removed via UI
+- UI/YAML coexistence with unique_id prefixes ("ui" vs "yaml")
+
+### Changed
+- Updated sensor.py to support from_ui parameter for unique_id differentiation
+- Enhanced config_flow.py with async_step_add_sensor, edit, and remove flows
+- Added CONF_SENSORS constant to const.py
+
+### Technical Details
+- Hub persistence during entity management (no connection drops)
+- Follows established pattern from covers (v1.8.0) and binary sensors (v1.9.0)
+- Safe reload handling with ValueError fallback
+
+### Roadmap Progress
+- ✅ Covers (v1.8.0)
+- ✅ Binary Sensors (v1.9.0)
+- ✅ Sensors (v1.10.0)
+- 🔲 Light (next)
+- 🔲 Switch
+- 🔲 Climate
+- 🔲 Media Player
+
+
+
+
+
+## [1.5.5] - 2025-11-11
+
+### Changed
+- Fix cover direction lock after stop - clear analog state
+
+## [1.5.4] - 2025-11-11
+
+### Changed
+- Fix cover stop functionality - ensure signals are transmitted
+
+## [1.5.3] - 2025-11-11
+
+### Changed
+- Fix event loop error in cover stop (use asyncio.sleep)
+
+## [1.5.2] - 2025-11-11
+
+### Changed
+- Fix event loop error in cover stop action
+
+## [1.5.1] - 2025-11-11
+
+### Fixed
+- **CRITICAL:** Fix AttributeError when device_info property accessed
+- CrestronXsig object now properly stores port attribute
+- Fixes compatibility issues with other integrations (e.g., versatile_thermostat)
+- No breaking changes - purely additive fix
+
+### Technical Details
+- Added `self.port = None` to CrestronXsig.__init__()
+- Added `self.port = port` to CrestronXsig.listen()
+- Fixes: `AttributeError: 'CrestronXsig' object has no attribute 'port'`
+
+### Impact
+- All entity device_info properties now work correctly
+- Device identifiers include port number as designed
+- Zero user action required - automatic on upgrade
+
+## [1.5.0] - 2025-11-11
+
+### Changed
+- Modernized platform loading to use current Home Assistant 2025.x patterns
+- Replaced deprecated `async_load_platform` with proper `asyncio.gather` pattern
+- Platforms now load in parallel with proper await (faster and more reliable)
+
+### Fixed
+- Eliminated deprecation warning for platform loading
+- Device registry integration now properly creates "Crestron Control System" device
+- Better error handling if platforms fail to load during startup
+
+### Notes
+- This is a non-breaking change - no user action required
+- All entities maintain their existing IDs and functionality
+- Upgrade from v1.4.0 is seamless - no configuration changes needed
+- Device should now appear in Settings → Devices & Services → Devices
+- Foundation for config flow implementation in v1.6.0
+
+## [1.4.0] - 2025-11-11
+
+### Added
+- Device registry integration - all Crestron entities now appear under a single "Crestron Control System" device
+- Device info metadata (manufacturer: Crestron Electronics, model: XSIG Gateway)
+- Foundation for future config flow implementation
+
+### Notes
+- This is a purely additive change with no breaking changes
+- All entities maintain their existing unique IDs and functionality
+- Upgrade from v1.3.0 is seamless - no configuration changes required
+- Device grouping improves UI organization and enables device-level diagnostics
+
+## [1.3.0] - 2025-11-11
+
+### Added
+- Unique IDs for all entity types (light, switch, climate, cover, media_player, sensor, binary_sensor)
+- Entity registry support enables UI-based entity renaming and customization
+- Stable entity IDs that persist across Home Assistant restarts
+
+### Notes
+- This release restores unique ID functionality for users who downgraded from v1.2.x
+- Existing entity registry entries will be automatically linked
+- No configuration changes required
+
+## [1.2.2] - 2025-11-11
+
+### Fixed
+- Fix ValueError: 'unavailable' is not a valid HVACMode in climate platform
+- Properly validate restored HVAC mode states before using them
+- Skip restoration of "unavailable" and "unknown" states
+
+## [1.2.1] - 2025-11-11
+
+### Fixed
+- Fix socket exception when trying to send to Crestron before connection established
+- Remove excessive debug logging that flooded logs (200+ messages)
+- Add proper error handling around all socket write operations
+- Mark connection as dead when socket write fails
+
+## [1.2.0] - 2025-11-11
+
+### Changed
+- Phase 1: Critical functionality fixes - join tracking, RestoreEntity, unique IDs
+
+## [1.1.2] - 2025-11-11
+
+### Fixed
+- Fix Home Assistant 2025.11 compatibility - remove deprecated STATE_* imports from cover platform
+
+## [1.1.1] - 2025-11-11
+
+### Changed
+- Add missing sensor and switch platforms
+
+## [1.1] - 2024-01-15
+
+### Added
+- Floor warming thermostat support with dedicated joins
+- Additional climate joins for better HVAC state feedback
+- Improved documentation and examples
+
+### Changed
+- Enhanced climate platform with more configuration options
+- Better error handling and logging
+
+### Fixed
+- Template synchronization improvements
+- Connection stability enhancements
+
+## [1.0] - Initial Release
+
+### Added
+- Initial release with XSIG protocol support
+- Platform support for: light, switch, climate, cover, media_player, sensor, binary_sensor
+- Bidirectional join communication (digital, analog, serial)
+- Template-based state synchronization (to_joins)
+- Script execution from join changes (from_joins)
+- Automatic reconnection handling

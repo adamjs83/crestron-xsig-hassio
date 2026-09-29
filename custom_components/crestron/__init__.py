@@ -1,0 +1,601 @@
+"""The Crestron Integration Component"""
+
+import asyncio
+from collections.abc import Callable
+import logging
+from typing import Any
+
+from homeassistant import config_entries
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.const import (
+    CONF_ATTRIBUTE,
+    CONF_ENTITY_ID,
+    CONF_SERVICE,
+    CONF_SERVICE_DATA,
+    CONF_VALUE_TEMPLATE,
+    EVENT_HOMEASSISTANT_STOP,
+    STATE_OFF,
+    STATE_ON,
+)
+from homeassistant.core import Context, Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, discovery
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import TrackTemplate, TrackTemplateResult, async_track_template_result
+from homeassistant.helpers.script import Script
+from homeassistant.helpers.template import Template
+import voluptuous as vol
+
+from .const import CONF_FROM_HUB, CONF_JOIN, CONF_PORT, CONF_SCRIPT, CONF_TO_HUB, DOMAIN, HUB, VERSION
+from .crestron import CrestronXsig
+from .led_binding_manager import LEDBindingManager
+
+_LOGGER = logging.getLogger(__name__)
+
+TO_JOINS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_JOIN): cv.string,
+        vol.Optional(CONF_ENTITY_ID): cv.entity_id,
+        vol.Optional(CONF_ATTRIBUTE): cv.string,
+        vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
+    }
+)
+
+FROM_JOINS_SCHEMA = vol.Schema({vol.Required(CONF_JOIN): cv.string, vol.Required(CONF_SCRIPT): cv.SCRIPT_SCHEMA})
+
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: vol.Schema(
+            {
+                vol.Required(CONF_PORT): cv.port,
+                vol.Optional(CONF_TO_HUB): vol.All(cv.ensure_list, [TO_JOINS_SCHEMA]),
+                vol.Optional(CONF_FROM_HUB): vol.All(cv.ensure_list, [FROM_JOINS_SCHEMA]),
+            }
+        )
+    },
+    extra=vol.ALLOW_EXTRA,
+)
+
+PLATFORMS = [
+    "binary_sensor",
+    "sensor",
+    "switch",
+    "light",
+    "climate",
+    "cover",
+    "media_player",
+    "event",
+    "select",
+]
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Set up a the crestron component."""
+
+    if config.get(DOMAIN) is not None:
+        # v1.7.0: Check if YAML should be imported to config entry
+        yaml_config = config[DOMAIN]
+        yaml_port = yaml_config.get(CONF_PORT)
+
+        # Check if already imported (don't re-import on every restart!)
+        existing_entries = hass.config_entries.async_entries(DOMAIN)
+        already_imported = any(entry.data.get(CONF_PORT) == yaml_port for entry in existing_entries)
+
+        if not already_imported and yaml_port is not None:
+            # Trigger one-time import flow for automatic migration
+            _LOGGER.info(
+                "Crestron YAML configuration detected on port %s. Triggering automatic import to config entry.",
+                yaml_port,
+            )
+
+            # Count to_joins and from_joins for logging
+            to_joins_count = len(yaml_config.get(CONF_TO_HUB, []))
+            from_joins_count = len(yaml_config.get(CONF_FROM_HUB, []))
+
+            _LOGGER.info(
+                "Importing hub configuration: port=%s, to_joins=%d, from_joins=%d",
+                yaml_port,
+                to_joins_count,
+                from_joins_count,
+            )
+
+            # Trigger import flow (runs async)
+            hass.async_create_task(
+                hass.config_entries.flow.async_init(
+                    DOMAIN,
+                    context={"source": SOURCE_IMPORT},
+                    data=yaml_config,  # Pass full config including to_joins/from_joins
+                )
+            )
+
+            # Show notification to user about successful import
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "message": (
+                        f"Your Crestron XSIG configuration (port {yaml_port}) has been "
+                        "automatically imported to a config entry."
+                        f"\n\n**Imported:** {to_joins_count} to_joins, {from_joins_count} from_joins"
+                        "\n\nYou can now **optionally** remove the 'crestron:' section from "
+                        "configuration.yaml and restart Home Assistant. The integration "
+                        "will continue to work from the config entry with full bidirectional "
+                        "communication preserved."
+                        "\n\nUntil you remove the YAML configuration, both will coexist "
+                        "(YAML takes precedence for hub, entities stay in their platform sections)."
+                    ),
+                    "title": "Crestron Configuration Imported ✓",
+                    "notification_id": f"crestron_yaml_imported_{yaml_port}",
+                },
+            )
+
+        # Continue with YAML setup (backward compatibility - YAML still works!)
+        # Don't wipe out existing data (preserves notification flags from config entry setup)
+        if DOMAIN not in hass.data:
+            hass.data[DOMAIN] = {}
+
+        # Mark that we're creating a YAML hub
+        hass.data[DOMAIN]["hub_source"] = "yaml"
+        hub = CrestronHub(hass, yaml_config)
+
+        await hub.start()
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, hub.stop)
+
+        # Load all platforms in parallel and wait for completion
+        await asyncio.gather(
+            *[discovery.async_load_platform(hass, platform, DOMAIN, {}, config) for platform in PLATFORMS]
+        )
+
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Crestron XSIG from a config entry.
+
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry containing port configuration
+
+    Returns:
+        True if setup successful, False otherwise
+    """
+    # Initialize domain data if not exists
+    if DOMAIN not in hass.data:
+        hass.data[DOMAIN] = {}
+        _LOGGER.debug("Initialized hass.data[DOMAIN] in async_setup_entry")
+    else:
+        _LOGGER.debug("hass.data[DOMAIN] already exists in async_setup_entry")
+
+    # Check if YAML configuration exists on same port
+    notification_id = f"crestron_dual_config_{entry.data[CONF_PORT]}"
+    notification_shown_key = f"dual_notification_shown_{entry.data[CONF_PORT]}"
+
+    _LOGGER.debug(
+        "Checking notification flag '%s': current value = %s",
+        notification_shown_key,
+        hass.data[DOMAIN].get(notification_shown_key, "NOT SET"),
+    )
+
+    # Simple check: does a YAML hub exist?
+    # We mark the hub source when creating it, so just check the marker
+    yaml_hub_exists = hass.data[DOMAIN].get("hub_source") == "yaml"
+
+    if yaml_hub_exists:
+        _LOGGER.debug("YAML hub detected (hub_source='yaml')")
+    else:
+        _LOGGER.debug("No YAML hub (hub_source=%s)", hass.data[DOMAIN].get("hub_source", "not set"))
+
+    if yaml_hub_exists:
+        yaml_hub = hass.data[DOMAIN][HUB]
+        # Check if it's the same port
+        if hasattr(yaml_hub, "port") and yaml_hub.port == entry.data[CONF_PORT]:
+            _LOGGER.warning(
+                "Crestron hub already configured via YAML on port %s. "
+                "YAML configuration takes precedence. "
+                "Remove YAML config to use UI configuration.",
+                entry.data[CONF_PORT],
+            )
+            # Create persistent notification only once per session (not on every reload)
+            # Use a flag stored at DOMAIN level (survives reload)
+            if not hass.data[DOMAIN].get(notification_shown_key, False):
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "message": f"Crestron XSIG is configured via both YAML and UI on port {entry.data[CONF_PORT]}. "
+                        "YAML hub configuration is being used. "
+                        "UI entity configuration (covers, etc.) will still work. "
+                        "To use UI hub configuration, remove the 'crestron:' section from configuration.yaml and restart.",
+                        "title": "Crestron Dual Configuration",
+                        "notification_id": notification_id,
+                    },
+                )
+                # Mark as shown at DOMAIN level (won't be cleared during entry reload)
+                hass.data[DOMAIN][notification_shown_key] = True
+                _LOGGER.debug("Created dual config notification for port %s", entry.data[CONF_PORT])
+            else:
+                _LOGGER.debug("Dual config notification already shown for port %s, skipping", entry.data[CONF_PORT])
+
+            # Store reference to YAML hub under entry ID so platforms can access it
+            hass.data[DOMAIN][entry.entry_id] = {
+                HUB: yaml_hub,  # Use YAML hub
+                "port": entry.data[CONF_PORT],
+                "entry": entry,
+            }
+
+            # Create device in registry
+            device_registry = dr.async_get(hass)
+            device_registry.async_get_or_create(
+                config_entry_id=entry.entry_id,
+                identifiers={(DOMAIN, f"crestron_{entry.data[CONF_PORT]}")},
+                name="Crestron Control System",
+                manufacturer="Crestron Electronics",
+                model="XSIG Gateway",
+                sw_version=VERSION,
+            )
+
+            # Forward entry setup to platforms so UI entities work with YAML hub
+            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+            _LOGGER.info("Crestron XSIG config entry setup complete (using YAML hub, UI entities enabled)")
+
+            # Return True - hub is from YAML, but platforms are set up
+            return True
+    else:
+        # No YAML hub exists, dismiss any previous dual config notification
+        await hass.services.async_call("persistent_notification", "dismiss", {"notification_id": notification_id})
+
+    # Create hub config from entry data
+    # v1.6.0 entries (UI): Only port
+    # v1.7.0 entries (import): Port + to_joins + from_joins
+    # v1.17.0: Dimmers create real entities (event, switch, select, light)
+    hub_config = {CONF_PORT: entry.data[CONF_PORT]}
+
+    # Preserve to_joins (if configured)
+    if CONF_TO_HUB in entry.data:
+        hub_config[CONF_TO_HUB] = entry.data[CONF_TO_HUB]
+        _LOGGER.info("Config entry has %d to_joins - bidirectional communication enabled", len(entry.data[CONF_TO_HUB]))
+
+    # Preserve from_joins (if configured)
+    if CONF_FROM_HUB in entry.data:
+        hub_config[CONF_FROM_HUB] = entry.data[CONF_FROM_HUB]
+        _LOGGER.info("Config entry has %d from_joins - Crestron→HA scripts enabled", len(entry.data[CONF_FROM_HUB]))
+
+    # Check if hub already exists from previous load (during reload)
+    existing_entry_data = hass.data[DOMAIN].get(entry.entry_id)
+    if existing_entry_data and existing_entry_data.get("hub_wrapper"):
+        # Reuse existing hub during reload
+        hub_wrapper = existing_entry_data["hub_wrapper"]
+        _LOGGER.debug("Reusing existing hub on port %s during reload", entry.data[CONF_PORT])
+    else:
+        # Create and start hub
+        # v1.7.0: Allow hub to set HUB key if no YAML hub exists
+        # This enables YAML platform entities to use config entry hub after YAML removal
+        yaml_hub_exists = HUB in hass.data[DOMAIN]
+        hub_wrapper = CrestronHub(hass, hub_config, set_hub_key=(not yaml_hub_exists))
+        await hub_wrapper.start()
+        _LOGGER.info("Created new hub on port %s", entry.data[CONF_PORT])
+
+    # Store hub under entry ID for config entry management
+    hass.data[DOMAIN][entry.entry_id] = {
+        HUB: hub_wrapper.hub,  # Store CrestronXsig instance
+        "port": entry.data[CONF_PORT],
+        "entry": entry,
+        "hub_wrapper": hub_wrapper,  # Store wrapper for cleanup
+    }
+
+    # Initialize LED binding manager (v1.22.0+)
+    # Get fresh entry from registry to ensure we have latest options
+    fresh_entry = hass.config_entries.async_get_entry(entry.entry_id)
+    led_manager = LEDBindingManager(hass, hub_wrapper.hub, fresh_entry or entry)
+    await led_manager.async_setup()
+
+    # Store LED binding manager in entry data
+    hass.data[DOMAIN][entry.entry_id]["led_binding_manager"] = led_manager
+
+    # If no YAML hub, this config entry hub will serve YAML platform entities
+    if not yaml_hub_exists:
+        # Mark that this hub is from a config entry, not YAML
+        hass.data[DOMAIN]["hub_source"] = "config_entry"
+        _LOGGER.info("Config entry hub serving YAML platform entities (no YAML crestron: section)")
+
+    # Register stop handler
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, hub_wrapper.stop))
+
+    # Create device in registry
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"crestron_{entry.data[CONF_PORT]}")},
+        name="Crestron Control System",
+        manufacturer="Crestron Electronics",
+        model="XSIG Gateway",
+        sw_version=VERSION,
+    )
+
+    # Forward entry setup to platforms
+    # Note: For v1.6.0, platforms will just create device linkage
+    # Actual entities still come from YAML configuration
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    _LOGGER.info("Crestron XSIG config entry setup complete on port %s", entry.data[CONF_PORT])
+
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry.
+
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry to unload
+
+    Returns:
+        True if unload successful, False otherwise
+    """
+    _LOGGER.debug("Unloading Crestron config entry for port %s", entry.data[CONF_PORT])
+
+    # Unload platforms
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if unload_ok:
+        # Get hub data (don't pop yet - check if dual config mode first)
+        entry_data = hass.data[DOMAIN].get(entry.entry_id)
+
+        # Check if this is dual config mode (YAML hub exists)
+        yaml_hub_exists = hass.data[DOMAIN].get("hub_source") == "yaml"
+        is_dual_config = yaml_hub_exists and entry_data
+
+        if entry_data:
+            # Cleanup LED binding manager (v1.22.0+)
+            if "led_binding_manager" in entry_data:
+                led_manager = entry_data["led_binding_manager"]
+                await led_manager.async_unload()
+                _LOGGER.debug("LED binding manager unloaded")
+
+            # In dual config mode: preserve YAML hub
+            # NOT in dual config mode: preserve config entry hub (don't stop/restart)
+            # The hub should only be stopped on full integration removal, not reload
+            if is_dual_config:
+                _LOGGER.debug(
+                    "Dual config mode: preserving YAML hub reference during reload on port %s", entry_data.get("port")
+                )
+            else:
+                _LOGGER.debug("Config entry mode: preserving hub during reload on port %s", entry_data.get("port"))
+            # DON'T stop hub or remove entry_data during reload
+            # The hub will be reused by the next setup_entry call
+
+        # Dismiss dual config notification only if NOT in dual config mode
+        # (In dual config, keep notification visible)
+        if not is_dual_config:
+            await hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": f"crestron_dual_config_{entry.data[CONF_PORT]}"},
+            )
+
+        # DON'T clear the notification shown flag
+        # It's session-based and should persist until HA restarts
+        # Clearing it causes notification spam on every reload
+
+    return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle removal of a config entry.
+
+    This is called when the entry is DELETED, not just reloaded.
+    Perform full cleanup of all resources.
+
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry being removed
+    """
+    _LOGGER.info("Removing Crestron config entry for port %s", entry.data[CONF_PORT])
+
+    # Get entry data
+    entry_data = hass.data[DOMAIN].get(entry.entry_id)
+
+    if entry_data:
+        # Stop hub if it exists and is running
+        if "hub_wrapper" in entry_data:
+            hub_wrapper = entry_data["hub_wrapper"]
+            try:
+                # Create a fake event for the stop method
+                from homeassistant.core import Event
+
+                stop_event = Event("homeassistant_stop")
+                await hub_wrapper.stop(stop_event)
+                _LOGGER.info("Hub stopped for port %s", entry_data.get("port"))
+            except Exception as err:
+                _LOGGER.warning("Error stopping hub during removal: %s", err)
+
+        # Remove entry data from hass.data
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        _LOGGER.debug("Removed entry data for %s", entry.entry_id)
+
+        # Check if this was the only config entry hub
+        # If so, clear the hub_source marker
+        hub_source = hass.data[DOMAIN].get("hub_source")
+        if hub_source == "config_entry":
+            # Check if there are other config entries
+            remaining_entries = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]
+            if not remaining_entries:
+                # No more config entries, clear the hub_source marker
+                hass.data[DOMAIN].pop("hub_source", None)
+                # Also clear the HUB key if it was set by this entry
+                hass.data[DOMAIN].pop(HUB, None)
+                _LOGGER.debug("Cleared hub_source and HUB markers (no more config entries)")
+
+        # Clear notification flags for this port
+        notification_shown_key = f"dual_notification_shown_{entry.data[CONF_PORT]}"
+        hass.data[DOMAIN].pop(notification_shown_key, None)
+
+    # Dismiss any notifications for this port
+    await hass.services.async_call(
+        "persistent_notification", "dismiss", {"notification_id": f"crestron_dual_config_{entry.data[CONF_PORT]}"}
+    )
+
+    _LOGGER.info("Crestron config entry removal complete for port %s", entry.data[CONF_PORT])
+
+
+class CrestronHub:
+    """Wrapper for the CrestronXsig library"""
+
+    def __init__(self, hass: HomeAssistant, config: dict[str, Any], set_hub_key: bool = True) -> None:
+        self.hass: HomeAssistant = hass
+        self.hub: CrestronXsig = CrestronXsig()
+        self.port: int | None = config.get(CONF_PORT)
+        self.context: Context = Context()
+        self.to_hub: dict[str, Template] = {}
+        self.tracker: Callable[[], None] | None = None  # Initialize tracker to None
+        self.from_hub: list[dict[str, Any]] | None = None  # Initialize from_hub to None
+        self._template_to_join: dict[Template, str] = {}
+
+        # Only set the HUB key if requested (YAML sets it, config entry doesn't)
+        # This prevents config entry from overwriting YAML's hub
+        if set_hub_key:
+            hass.data[DOMAIN][HUB] = self.hub
+
+        self.hub.register_sync_all_joins_callback(self.sync_joins_to_hub)
+        if CONF_TO_HUB in config:
+            track_templates = []
+            for entity in config[CONF_TO_HUB]:
+                template_string = None
+                if CONF_VALUE_TEMPLATE in entity:
+                    template = entity[CONF_VALUE_TEMPLATE]
+                    self.to_hub[entity[CONF_JOIN]] = template
+                    track_templates.append(TrackTemplate(template, None))
+                elif CONF_ATTRIBUTE in entity and CONF_ENTITY_ID in entity:
+                    template_string = (
+                        "{{state_attr('" + entity[CONF_ENTITY_ID] + "','" + entity[CONF_ATTRIBUTE] + "')}}"
+                    )
+                    template = Template(template_string, hass)
+                    self.to_hub[entity[CONF_JOIN]] = template
+                    track_templates.append(TrackTemplate(template, None))
+                elif CONF_ENTITY_ID in entity:
+                    template_string = "{{states('" + entity[CONF_ENTITY_ID] + "')}}"
+                    template = Template(template_string, hass)
+                    self.to_hub[entity[CONF_JOIN]] = template
+                    track_templates.append(TrackTemplate(template, None))
+            self.tracker = async_track_template_result(self.hass, track_templates, self.template_change_callback)
+            # Build reverse lookup for O(1) template-to-join mapping
+            self._template_to_join = {template: join for join, template in self.to_hub.items()}
+        if CONF_FROM_HUB in config:
+            self.from_hub = config[CONF_FROM_HUB]
+            self.hub.register_callback(self.join_change_callback)
+
+    async def start(self) -> None:
+        await self.hub.listen(self.port)
+
+    async def stop(self, event: Event) -> None:
+        """Remove callback(s) and template trackers."""
+        # Only remove from_hub callback if it was registered
+        if self.from_hub is not None:
+            self.hub.remove_callback(self.join_change_callback)
+
+        # Only remove tracker if it was created
+        if self.tracker is not None:
+            self.tracker()
+
+        await self.hub.stop()
+
+    async def join_change_callback(self, cbtype: str, value: str) -> None:
+        """Call service for tracked join change (from_hub)"""
+        for join in self.from_hub:
+            if cbtype == join[CONF_JOIN]:
+                # For digital joins, ignore on>off transitions  (avoids double calls to service for momentary presses)
+                if cbtype[:1] == "d" and value == "0":
+                    pass
+                else:
+                    if CONF_SERVICE in join and CONF_SERVICE_DATA in join:
+                        data = dict(join[CONF_SERVICE_DATA])
+                        _LOGGER.debug(
+                            f"join_change_callback calling service {join[CONF_SERVICE]} with data = {data} from join {cbtype} = {value}"
+                        )
+                        domain, service = join[CONF_SERVICE].split(".")
+                        await self.hass.services.async_call(domain, service, data)
+                    elif CONF_SCRIPT in join:
+                        sequence = join[CONF_SCRIPT]
+                        script = Script(self.hass, sequence, "Crestron Join Change", DOMAIN)
+                        await script.async_run({"value": value}, self.context)
+                        _LOGGER.debug(
+                            f"join_change_callback calling script {join[CONF_SCRIPT]} from join {cbtype} = {value}"
+                        )
+
+    @callback
+    def template_change_callback(self, event: Event | None, updates: list[TrackTemplateResult]) -> None:
+        """Set join from value_template (to_hub)"""
+        for track_template_result in updates:
+            update_result = track_template_result.result
+            update_template = track_template_result.template
+            if update_result == "None":
+                continue
+
+            # O(1) lookup instead of O(n) loop
+            join = self._template_to_join.get(update_template)
+            if not join:
+                continue
+
+            _LOGGER.debug(f"processing template_change_callback for join {join} with result {update_result}")
+            # Digital Join
+            if join[:1] == "d":
+                value = None
+                # Expanded truthy/falsy parsing for digital joins
+                result_str = str(update_result).lower()
+                if update_result == STATE_ON or result_str in ("true", "1", "yes"):
+                    value = True
+                elif update_result == STATE_OFF or result_str in ("false", "0", "no"):
+                    value = False
+                if value is not None:
+                    _LOGGER.debug(f"template_change_callback setting digital join {int(join[1:])} to {value}")
+                    self.hub.set_digital(int(join[1:]), value)
+            # Analog Join
+            elif join[:1] == "a":
+                try:
+                    # Handle float strings like "1.0" by converting to float first
+                    analog_value = int(float(update_result))
+                    _LOGGER.debug(f"template_change_callback setting analog join {int(join[1:])} to {analog_value}")
+                    self.hub.set_analog(int(join[1:]), analog_value)
+                except (ValueError, TypeError) as err:
+                    _LOGGER.warning("Invalid analog value for join %s: '%s' (%s)", join, update_result, err)
+            # Serial Join
+            elif join[:1] == "s":
+                _LOGGER.debug(f"template_change_callback setting serial join {int(join[1:])} to {str(update_result)}")
+                self.hub.set_serial(int(join[1:]), str(update_result))
+
+    async def sync_joins_to_hub(self) -> None:
+        """Sync join values from HA to Crestron (only valid values)."""
+        _LOGGER.debug("Syncing joins to control system")
+        for join, template in self.to_hub.items():
+            result = template.async_render()
+            # Only sync joins that have valid template values (not "None")
+            # This prevents sending zeros for uninitialized entities
+            if result == "None":
+                continue
+
+            # Digital Join
+            if join[:1] == "d":
+                value = None
+                # Expanded truthy/falsy parsing for digital joins
+                result_str = str(result).lower()
+                if result == STATE_ON or result_str in ("true", "1", "yes"):
+                    value = True
+                elif result == STATE_OFF or result_str in ("false", "0", "no"):
+                    value = False
+                if value is not None:
+                    _LOGGER.debug(f"sync_joins_to_hub setting digital join {int(join[1:])} to {value}")
+                    self.hub.set_digital(int(join[1:]), value)
+            # Analog Join
+            elif join[:1] == "a":
+                try:
+                    # Handle float strings like "1.0" by converting to float first
+                    analog_value = int(float(result))
+                    _LOGGER.debug(f"sync_joins_to_hub setting analog join {int(join[1:])} to {analog_value}")
+                    await self.hub.async_set_analog(int(join[1:]), analog_value)
+                except (ValueError, TypeError) as err:
+                    _LOGGER.warning("Invalid analog value for join %s: '%s' (%s)", join, result, err)
+            # Serial Join
+            elif join[:1] == "s":
+                _LOGGER.debug(f"sync_joins_to_hub setting serial join {int(join[1:])} to {str(result)}")
+                self.hub.set_serial(int(join[1:]), str(result))

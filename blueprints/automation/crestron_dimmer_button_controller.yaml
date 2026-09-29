@@ -1,0 +1,275 @@
+blueprint:
+  name: Crestron Dimmer/Keypad Button Controller
+  description: >
+    Configure actions for Crestron dimmer/keypad button presses.
+
+    **Features:**
+    - Supports single press, double press, and hold actions
+    - Configure only the buttons you need (all others ignored)
+    - Automatically monitors ALL buttons from the selected device
+
+    **LED Bindings:** Configure LED bindings via the Crestron integration
+    config (Settings → Devices & Services → Crestron → Configure → LED Bindings)
+
+  domain: automation
+  author: adamjs83
+  source_url: https://github.com/adamjs83/crestron-xsig-hassio/blob/main/blueprints/automation/crestron_dimmer_button_controller.yaml
+
+  input:
+    button_entity:
+      name: Button Event Entity (any button from your dimmer)
+      description: Select ANY button from your dimmer - all buttons on that device will be monitored
+      selector:
+        entity:
+          filter:
+            - domain: event
+              integration: crestron
+
+    # ========== Button 1 Actions ==========
+    button_1_press:
+      name: "Button 1 - Press Action"
+      description: Action to run when button 1 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_1_double:
+      name: "Button 1 - Double Press Action"
+      description: Action to run when button 1 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_1_hold:
+      name: "Button 1 - Hold Action"
+      description: Action to run when button 1 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    # ========== Button 2 Actions ==========
+    button_2_press:
+      name: "Button 2 - Press Action"
+      description: Action to run when button 2 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_2_double:
+      name: "Button 2 - Double Press Action"
+      description: Action to run when button 2 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_2_hold:
+      name: "Button 2 - Hold Action"
+      description: Action to run when button 2 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    # ========== Button 3 Actions ==========
+    button_3_press:
+      name: "Button 3 - Press Action"
+      description: Action to run when button 3 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_3_double:
+      name: "Button 3 - Double Press Action"
+      description: Action to run when button 3 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_3_hold:
+      name: "Button 3 - Hold Action"
+      description: Action to run when button 3 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    # ========== Button 4 Actions ==========
+    button_4_press:
+      name: "Button 4 - Press Action"
+      description: Action to run when button 4 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_4_double:
+      name: "Button 4 - Double Press Action"
+      description: Action to run when button 4 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_4_hold:
+      name: "Button 4 - Hold Action"
+      description: Action to run when button 4 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    # ========== Button 5 Actions ==========
+    button_5_press:
+      name: "Button 5 - Press Action"
+      description: Action to run when button 5 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_5_double:
+      name: "Button 5 - Double Press Action"
+      description: Action to run when button 5 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_5_hold:
+      name: "Button 5 - Hold Action"
+      description: Action to run when button 5 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    # ========== Button 6 Actions ==========
+    button_6_press:
+      name: "Button 6 - Press Action"
+      description: Action to run when button 6 is pressed once (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_6_double:
+      name: "Button 6 - Double Press Action"
+      description: Action to run when button 6 is double pressed (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+    button_6_hold:
+      name: "Button 6 - Hold Action"
+      description: Action to run when button 6 is held (leave empty to ignore)
+      default: []
+      selector:
+        action: {}
+
+mode: parallel
+max: 10
+
+variables:
+  selected_button: !input button_entity
+  # Get device from selected button
+  dimmer_device: "{{ device_id(selected_button) }}"
+  # Get all button entities from that device
+  all_buttons: >
+    {% set buttons = namespace(list=[]) %}
+    {% for entity in device_entities(dimmer_device) %}
+      {% if entity.startswith('event.') and 'button' in entity %}
+        {% set buttons.list = buttons.list + [entity] %}
+      {% endif %}
+    {% endfor %}
+    {{ buttons.list }}
+
+trigger:
+  # This is a workaround - trigger on the selected button
+  # but check all buttons from the same device in action
+  - platform: state
+    entity_id: !input button_entity
+    attribute: event_type
+  - platform: state
+    entity_id: !input button_entity
+    attribute: button
+
+action:
+  # Check if trigger was from our device's button entities
+  - condition: template
+    value_template: "{{ trigger.entity_id in all_buttons }}"
+
+  - variables:
+      # Extract event data from the entity attributes
+      event_type: "{{ trigger.to_state.attributes.event_type }}"
+      button_num: "{{ trigger.to_state.attributes.button | int }}"
+
+  - choose:
+      # ========== Button 1 Actions ==========
+      - conditions:
+          - "{{ button_num == 1 and event_type == 'press' }}"
+        sequence: !input button_1_press
+
+      - conditions:
+          - "{{ button_num == 1 and event_type == 'double_press' }}"
+        sequence: !input button_1_double
+
+      - conditions:
+          - "{{ button_num == 1 and event_type == 'hold' }}"
+        sequence: !input button_1_hold
+
+      # ========== Button 2 Actions ==========
+      - conditions:
+          - "{{ button_num == 2 and event_type == 'press' }}"
+        sequence: !input button_2_press
+
+      - conditions:
+          - "{{ button_num == 2 and event_type == 'double_press' }}"
+        sequence: !input button_2_double
+
+      - conditions:
+          - "{{ button_num == 2 and event_type == 'hold' }}"
+        sequence: !input button_2_hold
+
+      # ========== Button 3 Actions ==========
+      - conditions:
+          - "{{ button_num == 3 and event_type == 'press' }}"
+        sequence: !input button_3_press
+
+      - conditions:
+          - "{{ button_num == 3 and event_type == 'double_press' }}"
+        sequence: !input button_3_double
+
+      - conditions:
+          - "{{ button_num == 3 and event_type == 'hold' }}"
+        sequence: !input button_3_hold
+
+      # ========== Button 4 Actions ==========
+      - conditions:
+          - "{{ button_num == 4 and event_type == 'press' }}"
+        sequence: !input button_4_press
+
+      - conditions:
+          - "{{ button_num == 4 and event_type == 'double_press' }}"
+        sequence: !input button_4_double
+
+      - conditions:
+          - "{{ button_num == 4 and event_type == 'hold' }}"
+        sequence: !input button_4_hold
+
+      # ========== Button 5 Actions ==========
+      - conditions:
+          - "{{ button_num == 5 and event_type == 'press' }}"
+        sequence: !input button_5_press
+
+      - conditions:
+          - "{{ button_num == 5 and event_type == 'double_press' }}"
+        sequence: !input button_5_double
+
+      - conditions:
+          - "{{ button_num == 5 and event_type == 'hold' }}"
+        sequence: !input button_5_hold
+
+      # ========== Button 6 Actions ==========
+      - conditions:
+          - "{{ button_num == 6 and event_type == 'press' }}"
+        sequence: !input button_6_press
+
+      - conditions:
+          - "{{ button_num == 6 and event_type == 'double_press' }}"
+        sequence: !input button_6_double
+
+      - conditions:
+          - "{{ button_num == 6 and event_type == 'hold' }}"
+        sequence: !input button_6_hold
+    default: []
